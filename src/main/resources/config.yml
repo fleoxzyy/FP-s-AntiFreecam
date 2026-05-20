@@ -1,6 +1,6 @@
 # ============================================================
 #  FPAntiFreeCam  –  Configuration
-#  Donut-style Anti-FreeCam protection for Spigot / Paper / Folia
+#  Anti-FreeCam protection for Spigot / Paper / Folia
 #  1.19 · 1.20 · 1.21 · 26.1+
 # ============================================================
 
@@ -30,7 +30,7 @@ worlds:
 # ── FreeCam protection thresholds ────────────────────────────
 protection:
   # Y level at-or-above which the hiding effect kicks in.
-  # On DonutSMP this is essentially "surface level" (Y ≥ 16 → void below).
+  # This is essentially "surface level" (Y ≥ 16 → void below).
   surface-y: 16.0
 
   # Every block/entity at-or-below this Y will be hidden from clients

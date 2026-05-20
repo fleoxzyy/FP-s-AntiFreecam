@@ -32,7 +32,7 @@ Designed for modern Minecraft versions and high-population servers, it features 
 ```yaml
 # ============================================================
 #  FPAntiFreeCam  –  Configuration
-#  Anti-Xray & Anti-FreeCam protection for Spigot / Paper / Folia
+#  Anti-FreeCam protection for Spigot / Paper / Folia
 #  1.19 · 1.20 · 1.21 · 26.1+
 # ============================================================
 
@@ -62,7 +62,7 @@ worlds:
 # ── FreeCam protection thresholds ────────────────────────────
 protection:
   # Y level at-or-above which the hiding effect kicks in.
-  # Surface level (Y ≥ 16 → void below).
+  # This is essentially "surface level" (Y ≥ 16 → void below).
   surface-y: 16.0
 
   # Every block/entity at-or-below this Y will be hidden from clients
