@@ -1,0 +1,120 @@
+package me.fleoxxzy.FPAntiFreeCam;
+
+import org.bukkit.Bukkit;
+import org.bukkit.World;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.util.Map;
+import java.util.Queue;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+/**
+ * Paper / Spigot chunk refresh scheduler.
+ * Queues chunks on the main thread and drains up to MAX_PER_TICK per tick
+ * to spread CPU load without holding up the server.
+ */
+public final class PaperScheduler {
+
+    private static final long REFRESH_COOLDOWN_MS = 50L;
+    private static final int  MAX_PER_TICK        = 30;
+
+    private final Plugin              plugin;
+    private final Map<UUID, Long>     lastRefreshTime = new ConcurrentHashMap<>();
+    private final Queue<ChunkTask>    queue           = new ConcurrentLinkedQueue<>();
+    private       BukkitTask          drainTask;
+
+    public PaperScheduler(Plugin plugin) {
+        this.plugin = plugin;
+        startDrainTask();
+    }
+
+    // ── Public API ────────────────────────────────────────────────────────
+
+    public void refreshChunks(Player player, int radiusChunks) {
+        UUID id  = player.getUniqueId();
+        long now = System.currentTimeMillis();
+        Long last = lastRefreshTime.get(id);
+        if (last != null && now - last < REFRESH_COOLDOWN_MS) return;
+
+        World world = player.getWorld();
+        if (world == null) return;
+
+        int px = player.getLocation().getBlockX() >> 4;
+        int pz = player.getLocation().getBlockZ() >> 4;
+
+        // Queue rings from the centre outward so the nearest chunks refresh first
+        for (int r = 0; r <= radiusChunks; r++) {
+            for (int cx = px - r; cx <= px + r; cx++) {
+                for (int cz = pz - r; cz <= pz + r; cz++) {
+                    if (Math.abs(cx - px) == r || Math.abs(cz - pz) == r) {
+                        queue.offer(new ChunkTask(world, cx, cz, id, r));
+                    }
+                }
+            }
+        }
+        lastRefreshTime.put(id, now);
+    }
+
+    public void cleanupPlayer(UUID id) {
+        lastRefreshTime.remove(id);
+        queue.removeIf(t -> t.playerId.equals(id));
+    }
+
+    public void shutdown() {
+        if (drainTask != null && !drainTask.isCancelled()) drainTask.cancel();
+        queue.clear();
+        lastRefreshTime.clear();
+    }
+
+    public String stats() {
+        return "queue:" + queue.size() + "  tracked:" + lastRefreshTime.size();
+    }
+
+    public static boolean shouldUse() {
+        return !PlatformUtil.isFolia();
+    }
+
+    // ── Internal ─────────────────────────────────────────────────────────
+
+    private void startDrainTask() {
+        drainTask = Bukkit.getScheduler().runTaskTimer(plugin, this::drain, 1L, 1L);
+    }
+
+    private void drain() {
+        int processed = 0;
+        while (!queue.isEmpty() && processed < MAX_PER_TICK) {
+            ChunkTask t = queue.poll();
+            if (t == null) break;
+            try {
+                Player p = Bukkit.getPlayer(t.playerId);
+                if (p != null && p.isOnline()
+                        && p.getWorld().equals(t.world)
+                        && t.world.isChunkLoaded(t.cx, t.cz)) {
+                    t.world.refreshChunk(t.cx, t.cz);
+                    processed++;
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[FPAntiFreeCam] Chunk refresh failed ("
+                        + t.cx + "," + t.cz + "): " + e.getMessage());
+            }
+        }
+    }
+
+    // ── Inner record ──────────────────────────────────────────────────────
+
+    private static class ChunkTask {
+        final World world;
+        final int   cx, cz;
+        final UUID  playerId;
+        /** Ring distance from player – used for priority ordering. */
+        final int   ring;
+        ChunkTask(World world, int cx, int cz, UUID playerId, int ring) {
+            this.world = world; this.cx = cx; this.cz = cz;
+            this.playerId = playerId; this.ring = ring;
+        }
+    }
+}

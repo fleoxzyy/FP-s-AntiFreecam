@@ -1,0 +1,50 @@
+# ============================================================
+#  FPAntiFreeCam  –  Language file  (English)
+# ============================================================
+messages:
+  # ── General ─────────────────────────────────────────────
+  prefix: "&8[&bFPAntiFreeCam&8]&r "
+  no-permission: "&cYou don't have permission to run this command."
+  players-only: "&cThis command can only be run by a player."
+
+  # ── Plugin lifecycle ─────────────────────────────────────
+  enabled:  "&aFPAntiFreeCam enabled. Protecting &b{0}&a world(s)."
+  disabled: "&cFPAntiFreeCam has been disabled."
+
+  # ── Errors ───────────────────────────────────────────────
+  error:
+    packetevents-null:        "&cPacketEvents API returned null – critical setup error."
+    packetevents-load-failed: "&cPacketEvents failed to load. Check your server version."
+    packetevents-unavailable: "&cPacketEvents is unavailable. Plugin cannot function."
+    block-state-failed:       "&cFailed to initialise replacement block state for: {0}"
+    block-state-null:         "&cNo valid replacement block state found. Disabling plugin."
+    online-player-loop:       "&cException during initial player scan: {0}"
+    world-not-found:          "&cWorld &6{0}&c was not found."
+
+  # ── Commands ─────────────────────────────────────────────
+  reload-success: "&aConfiguration reloaded. Active worlds: &b{0}"
+  debug-on:  "&aDebug mode &aENABLED&a."
+  debug-off: "&aDebug mode &7DISABLED&a."
+
+  world-added:    "&aWorld &b{0}&a added to the protection list."
+  world-removed:  "&cWorld &b{0}&c removed from the protection list."
+  world-exists:   "&eWorld &b{0}&e is already protected."
+  world-missing:  "&eWorld &b{0}&e is not in the protection list."
+  world-list-header: "&aCurrently protected worlds:"
+  world-list-entry:  "&7  - &b{0}"
+  world-list-empty:  "&eNo worlds are currently protected."
+
+  bypass-granted: "&aBypass granted to &b{0}&a."
+  bypass-revoked: "&cBypass revoked from &b{0}&c."
+  bypass-unknown: "&cPlayer &b{0}&c not found."
+
+  help-header: "&8&m----&r &bFPAntiFreeCam &8&m----&r"
+  help-footer: "&8&m------------------------&r"
+  help-lines:
+    - "&e/fpac reload    &7– Reload config"
+    - "&e/fpac debug     &7– Toggle debug logging"
+    - "&e/fpac world <list|add|remove> [name]  &7– Manage worlds"
+    - "&e/fpac stats     &7– Show runtime statistics"
+    - "&e/fpac bypass <player>  &7– Toggle bypass for a player"
+    - "&e/fpac help      &7– Show this help"
+    - "&e/fpreload       &7– Alias for /fpac reload"

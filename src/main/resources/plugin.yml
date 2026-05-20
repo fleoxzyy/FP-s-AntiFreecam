@@ -1,0 +1,54 @@
+name: FPAntiFreeCam
+version: '${version}'
+main: me.fleoxxzy.FPAntiFreeCam.FPAntiFreeCam
+api-version: '1.19'
+folia-supported: true
+load: STARTUP
+authors: [ Fleoxzyy ]
+description: >
+  Anti-FreeCam plugin.
+  Hides underground blocks/entities via packet manipulation when a player
+  is at or above the configured surface Y level, making FreeCam mods see void.
+website: https://github.com/Fleoxzyy/FPAntiFreeCam
+softdepend: [ Geyser-Spigot, floodgate ]
+
+commands:
+  fpac:
+    description: Main FPAntiFreeCam command.
+    usage: /fpac <reload|debug|world|stats|bypass|help> [args]
+    permission: fpantifreecam.admin
+    aliases: [ fpafc, antifreecam ]
+  fpreload:
+    description: Reloads FPAntiFreeCam configuration.
+    usage: /fpreload
+    permission: fpantifreecam.admin
+    aliases: [ fpacreload ]
+  fpdebug:
+    description: Toggles FPAntiFreeCam debug mode.
+    usage: /fpdebug
+    permission: fpantifreecam.admin
+    aliases: [ fpacdebug ]
+
+permissions:
+  fpantifreecam.admin:
+    description: Full access to all FPAntiFreeCam admin commands.
+    default: op
+    children:
+      fpantifreecam.reload: true
+      fpantifreecam.debug: true
+      fpantifreecam.world: true
+      fpantifreecam.bypass: true
+  fpantifreecam.reload:
+    description: Allows reloading the configuration.
+    default: op
+  fpantifreecam.debug:
+    description: Allows toggling debug mode.
+    default: op
+  fpantifreecam.world:
+    description: Allows managing protected world list.
+    default: op
+  fpantifreecam.bypass:
+    description: >
+      Players with this permission are exempt from the FreeCam protection
+      (they can still see underground blocks). Useful for staff/builders.
+    default: false

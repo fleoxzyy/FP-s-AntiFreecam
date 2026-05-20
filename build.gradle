@@ -1,0 +1,79 @@
+plugins {
+    id 'java'
+    id 'com.gradleup.shadow' version '8.3.6'
+    id("xyz.jpenilla.run-paper") version "2.3.1"
+}
+
+group = 'me.fleoxxzy'
+version = '1.0.0'
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "papermc-repo"
+        url = "https://repo.papermc.io/repository/maven-public/"
+    }
+    maven {
+        name = "codemc-releases"
+        url = "https://repo.codemc.io/repository/maven-releases/"
+    }
+    maven {
+        name = "codemc-snapshots"
+        url = "https://repo.codemc.io/repository/maven-snapshots/"
+    }
+}
+
+dependencies {
+    // Paper API – 1.19.4 gives us the widest range without breaking newer builds
+    compileOnly("io.papermc.paper:paper-api:1.19.4-R0.1-SNAPSHOT")
+
+    // PacketEvents bundled into our jar (no separate plugin required)
+    implementation("com.github.retrooper:packetevents-spigot:2.12.1")
+}
+
+// ── Shadow (fat-jar) configuration ──────────────────────────────────────────
+shadowJar {
+    // Relocate PacketEvents so it doesn't conflict with servers that also
+    // have the standalone PacketEvents plugin installed.
+    relocate 'com.github.retrooper', 'me.fleoxxzy.fpantifreecam.libs.retrooper'
+    relocate 'io.github.retrooper',  'me.fleoxxzy.fpantifreecam.libs.io.retrooper'
+    archiveClassifier.set('')   // output as FPAntiFreeCam-<version>.jar (no "-all")
+}
+
+// Make 'build' task produce the shadow jar automatically
+build.dependsOn shadowJar
+jar.enabled = false          // disable the plain jar so only the shadow jar is produced
+
+// ── Run-Paper test server ───────────────────────────────────────────────────
+tasks {
+    runServer {
+        minecraftVersion("1.21")
+    }
+}
+
+// ── Java compatibility ──────────────────────────────────────────────────────
+def targetJavaVersion = 21
+java {
+    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
+    sourceCompatibility = javaVersion
+    targetCompatibility = javaVersion
+    if (JavaVersion.current() < javaVersion) {
+        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
+        options.release.set(targetJavaVersion)
+    }
+}
+
+processResources {
+    def props = [version: version]
+    inputs.properties props
+    filteringCharset 'UTF-8'
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
