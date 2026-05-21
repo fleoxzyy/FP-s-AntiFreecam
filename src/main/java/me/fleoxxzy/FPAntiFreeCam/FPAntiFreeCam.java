@@ -255,6 +255,15 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     public int getReplacementBlockId()             { return replacementBlockId;    }
     public int getVoidY()                          { return voidY;                 }
 
+    /**
+     * Checks if the player has a clear line of sight to the sky from their current location.
+     * Used as an auxiliary check for activation.
+     */
+    public boolean isExposedToSky(Player player) {
+        Location loc = player.getLocation();
+        return loc.getWorld().getHighestBlockYAt(loc) <= loc.getY();
+    }
+
     public void dbg(String message) {
         if (debugMode) {
             getLogger().info("[FPAntiFreeCam DEBUG] " + message);
@@ -381,7 +390,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         }
 
         boolean bypass     = player.hasPermission("fpantifreecam.bypass");
-        boolean shouldHide = !bypass && player.getLocation().getY() >= surfaceY;
+        boolean shouldHide = !bypass && (player.getLocation().getY() >= surfaceY || isExposedToSky(player));
         playerHiddenState.put(player.getUniqueId(), shouldHide);
         dbg("InitialState " + player.getName() + " hidden=" + shouldHide
                 + " Y=" + String.format("%.1f", player.getLocation().getY()));
@@ -680,7 +689,8 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         UUID    id        = player.getUniqueId();
         boolean bypass    = player.hasPermission("fpantifreecam.bypass");
-        boolean newHidden = !bypass && to.getY() >= surfaceY;
+        boolean isSky     = isExposedToSky(player);
+        boolean newHidden = !bypass && (to.getY() >= surfaceY || isSky);
 
         // BUG FIX: if no state entry exists (join/world-change race condition),
         // initialise it rather than hitting the getOrDefault(id, newHidden) trap
