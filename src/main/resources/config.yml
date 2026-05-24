@@ -4,7 +4,7 @@
 #  1.19 · 1.20 · 1.21 · 26.1+
 # ============================================================
 
-config-version: 1
+config-version: 2
 
 # ── General ──────────────────────────────────────────────────
 settings:
@@ -48,6 +48,10 @@ protection:
     zone: 8.0
     # Minimum upward angle (0.0 to 1.0) to trigger protection.
     min-upward-angle: 0.15
+    # Milliseconds a player must remain outside the raycast zone before
+    # protection is deactivated. Prevents flickering when hovering near
+    # the zone boundary. Lower = snappier transitions; higher = more stable.
+    deactivation-debounce-ms: 500
 
 # ── Replacement block ─────────────────────────────────────────
 # Block type sent to the client in place of hidden underground blocks.

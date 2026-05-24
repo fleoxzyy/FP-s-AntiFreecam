@@ -70,6 +70,12 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     /** Epoch ms when each player's refresh cooldown expires. */
     private final Map<UUID, Long>   refreshCooldowns   = new ConcurrentHashMap<>();
     /**
+     * Epoch ms when a raycast-based deactivation was first requested for each player.
+     * Deactivation is only applied after a short debounce (500 ms) to prevent
+     * rapid state flipping when the player hovers near the raycast zone boundary.
+     */
+    private final Map<UUID, Long>   raycastDeactivationPending = new ConcurrentHashMap<>();
+    /**
      * Players currently being re-teleported by us to avoid infinite loops
      * in the teleport event handler.
      */
@@ -125,6 +131,11 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
      * ~0.15 ≈ roughly 9° above horizontal.
      */
     private double  raycastMinUpward = 0.15;
+    /**
+     * Milliseconds a player must remain outside the raycast zone before
+     * protection is actually deactivated (debounce against flickering).
+     */
+    private long    raycastDebounceMs = 500L;
 
     // ── Language config ───────────────────────────────────────────────────
     private FileConfiguration langConfig;
@@ -234,6 +245,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         playerHiddenState.clear();
         refreshCooldowns.clear();
+        raycastDeactivationPending.clear();
         internallyTeleporting.clear();
     }
 
@@ -308,9 +320,10 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         forceImmediateRefresh = cfg.getBoolean("performance.instant-protection.force-immediate-refresh", true);
 
         // Raycast settings
-        raycastEnabled   = cfg.getBoolean("protection.raycast.enabled", true);
-        raycastZone      = cfg.getDouble("protection.raycast.zone", 8.0);
-        raycastMinUpward = cfg.getDouble("protection.raycast.min-upward-angle", 0.15);
+        raycastEnabled    = cfg.getBoolean("protection.raycast.enabled", true);
+        raycastZone       = cfg.getDouble("protection.raycast.zone", 8.0);
+        raycastMinUpward  = cfg.getDouble("protection.raycast.min-upward-angle", 0.15);
+        raycastDebounceMs = cfg.getLong("protection.raycast.deactivation-debounce-ms", 500L);
 
         loadLanguageConfig(cfg.getString("settings.language", "en"));
 
@@ -482,30 +495,57 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
      * <ol>
      *   <li>Their look-vector has a meaningful upward component
      *       (camera angle could expose underground via FreeCam).</li>
-     *   <li>A vertical ray from their eyes to surfaceY hits no solid blocks
+     *   <li>A vertical ray from their feet to surfaceY hits no solid blocks
      *       (cave with an opening to the sky – FreeCam can look down into it).</li>
      * </ol>
+     *
+     * Uses feet-Y (player.getLocation().getY()) to stay consistent with
+     * onPlayerMove, avoiding the ~1.6-block eye-vs-feet discrepancy that
+     * previously created a dead zone where neither handler owned the state.
+     *
+     * Deactivation is debounced (500 ms) to prevent rapid state flipping when
+     * the player hovers near the zone boundary.
      */
     private void checkRaycastActivation(Player player) {
-        double eyeY = player.getEyeLocation().getY();
+        // Use feet-Y for consistency with onPlayerMove threshold checks.
+        double feetY = player.getLocation().getY();
 
         // Already at/above surface – onPlayerMove handles that range.
-        if (eyeY >= surfaceY) return;
+        if (feetY >= surfaceY) {
+            raycastDeactivationPending.remove(player.getUniqueId());
+            return;
+        }
 
         UUID id = player.getUniqueId();
 
-        // Too far underground: if the state was previously armed by raycast,
-        // release it so the player can see normally while caving.
-        if (eyeY < surfaceY - raycastZone) {
+        // Too far underground – arm deactivation with a short debounce so a
+        // brief dip below the zone boundary doesn't cause a flicker.
+        if (feetY < surfaceY - raycastZone) {
             if (Boolean.TRUE.equals(playerHiddenState.get(id))) {
+                long now      = System.currentTimeMillis();
+                long pending  = raycastDeactivationPending.getOrDefault(id, 0L);
+                if (pending == 0L) {
+                    // First time we see this: record the timestamp and wait.
+                    raycastDeactivationPending.put(id, now);
+                    return;
+                }
+                if (now - pending < raycastDebounceMs) return; // still within debounce window
+
+                // Debounce elapsed – actually deactivate.
+                raycastDeactivationPending.remove(id);
                 playerHiddenState.put(id, false);
                 if (entityHider != null) entityHider.updateFor(player);
                 refreshFullView(player);
                 dbg("Raycast deactivated (too deep): " + player.getName()
-                        + " eyeY=" + String.format("%.1f", eyeY));
+                        + " feetY=" + String.format("%.1f", feetY));
+            } else {
+                raycastDeactivationPending.remove(id);
             }
             return;
         }
+
+        // Player is inside the raycast zone – cancel any pending deactivation.
+        raycastDeactivationPending.remove(id);
 
         boolean currentHidden = Boolean.TRUE.equals(playerHiddenState.getOrDefault(id, false));
         boolean shouldHide    = false;
@@ -516,16 +556,19 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
             shouldHide = true;
         }
 
-        // Condition 2 – vertical ray from eyes to surfaceY finds no solid block
-        // (the cave has an opening or thin ceiling above the player).
+        // Condition 2 – vertical ray from player's position to surfaceY finds no
+        // solid block (the cave has an opening directly above – FreeCam can
+        // exploit that gap to look down into the base).
         if (!shouldHide) {
             try {
                 Location eye    = player.getEyeLocation();
-                double   distUp = surfaceY - eyeY + 2.0;
-                RayTraceResult rt = player.getWorld().rayTraceBlocks(
-                        eye, new Vector(0, 1, 0), distUp,
-                        FluidCollisionMode.NEVER, true);
-                if (rt == null) shouldHide = true; // unobstructed path to surface
+                double   distUp = surfaceY - eye.getY();
+                if (distUp > 0.5) { // only cast if there is meaningful distance
+                    RayTraceResult rt = player.getWorld().rayTraceBlocks(
+                            eye, new Vector(0, 1, 0), distUp,
+                            FluidCollisionMode.NEVER, true);
+                    if (rt == null) shouldHide = true; // unobstructed path to surface
+                }
             } catch (Exception ignored) {}
         }
 
@@ -533,14 +576,10 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         playerHiddenState.put(id, shouldHide);
         if (entityHider != null) entityHider.updateFor(player);
+        refreshFullView(player);
 
-        if (shouldHide) {
-            performRefresh(player, Bukkit.getViewDistance());
-        } else {
-            refreshFullView(player);
-        }
         dbg("Raycast " + (shouldHide ? "ON" : "OFF") + ": " + player.getName()
-                + " eyeY=" + String.format("%.1f", eyeY)
+                + " feetY=" + String.format("%.1f", feetY)
                 + " lookY=" + String.format("%.2f", dir.getY()));
     }
 
@@ -565,6 +604,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         UUID id = event.getPlayer().getUniqueId();
         playerHiddenState.remove(id);
         refreshCooldowns.remove(id);
+        raycastDeactivationPending.remove(id);
         internallyTeleporting.remove(id);
         if (foliaScheduler != null) foliaScheduler.cleanupPlayer(id);
         if (paperScheduler != null) paperScheduler.cleanupPlayer(id);
@@ -701,6 +741,20 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
             return;
         }
         boolean oldHidden = Boolean.TRUE.equals(playerHiddenState.get(id));
+
+        // If the player is moving deeper into the raycast zone (below surfaceY but
+        // above surfaceY-raycastZone), defer deactivation to the raycast task.
+        // This prevents onPlayerMove from fighting the raycast task and causing
+        // rapid state flipping / chunk refresh spam.
+        if (!newHidden && raycastEnabled && to.getY() >= surfaceY - raycastZone) {
+            // Still inside the zone where raycast may need protection on.
+            // Let checkRaycastActivation decide based on look direction / sky access.
+            return;
+        }
+
+        // Player moved out of the raycast zone entirely; clear any pending deactivation
+        // so the raycast task's debounce doesn't re-arm incorrectly.
+        if (!newHidden) raycastDeactivationPending.remove(id);
 
         if (newHidden == oldHidden) return;
 
@@ -965,6 +1019,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         ChatUtil.send(sender, " &7Raycast     &8: " + (raycastEnabled
                 ? "&aON &8| &7zone &8= &e" + (int)raycastZone
                 + " &8| &7minUpY &8= &e" + raycastMinUpward
+                + " &8| &7debounce &8= &e" + raycastDebounceMs + "ms"
                 : "&cOFF"));
         ChatUtil.send(sender, sep);
         ChatUtil.send(sender, " &7Pkts proc   &8: &e" + totalPacketsProcessed.get()
@@ -1040,7 +1095,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     private void checkConfigVersion() {
         FileConfiguration cfg = getConfig();
         int currentVer = cfg.getInt("config-version", 0);
-        int latestVer  = 1;
+        int latestVer  = 2;
 
         if (currentVer < latestVer) {
             getLogger().info("[FPAntiFreeCam] Updating config.yml to version " + latestVer + "...");
