@@ -113,29 +113,31 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     private int     preLoadDistance          = 10;
     private boolean forceImmediateRefresh    = true;
 
-    // ── Raycast config ────────────────────────────────────────────────────
+    // ── Raycast / deep-deactivation config ───────────────────────────────
     /**
-     * When true, a periodic task checks players who are just below surfaceY.
-     * If they are looking upward (or have a clear vertical line of sight to
-     * the surface), protection is armed so FreeCam cannot exploit cave openings.
+     * When true, the periodic raycast task runs for players between
+     * deepDeactivationY and surfaceY. If they look upward or have an
+     * unobstructed line-of-sight to the surface, protection stays armed.
      */
-    private boolean raycastEnabled   = true;
+    private boolean raycastEnabled    = true;
     /**
-     * Blocks below surfaceY within which the raycast check runs.
-     * Players deeper than (surfaceY - raycastZone) are NOT checked.
+     * Minimum upward component of the look-vector (0–1) to trigger the
+     * look-direction condition. ~0.15 ≈ ~9° above horizontal.
      */
-    private double  raycastZone      = 8.0;
+    private double  raycastMinUpward  = 0.15;
     /**
-     * Minimum upward component of the look-vector (0–1) required to trigger
-     * the look-direction condition of the raycast check.
-     * ~0.15 ≈ roughly 9° above horizontal.
-     */
-    private double  raycastMinUpward = 0.15;
-    /**
-     * Milliseconds a player must remain outside the raycast zone before
-     * protection is actually deactivated (debounce against flickering).
+     * Milliseconds a player must remain below deepDeactivationY before
+     * protection is actually deactivated (debounce against flicker).
      */
     private long    raycastDebounceMs = 500L;
+    /**
+     * Absolute Y floor. If the player's feet are BELOW this value,
+     * protection is ALWAYS deactivated — no raycast, no exceptions.
+     * Fixes the "Y=16 void" bug where a player digging straight down
+     * in stone sees nothing but void beneath them.
+     * Range: should be between voidY and surfaceY.
+     */
+    private double  deepDeactivationY = 20.0;
 
     // ── Language config ───────────────────────────────────────────────────
     private FileConfiguration langConfig;
@@ -146,6 +148,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     private PaperScheduler  paperScheduler;
     private BedrockSupport  bedrockSupport;
     private EntityHider     entityHider;
+    private UpdateChecker   updateChecker;
 
     // ═════════════════════════════════════════════════════════════════════
     //  JavaPlugin lifecycle
@@ -188,6 +191,8 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         bedrockSupport = new BedrockSupport(this);
         entityHider    = new EntityHider(this);
+        updateChecker  = new UpdateChecker(this);
+        getServer().getPluginManager().registerEvents(updateChecker, this);
 
         if (FoliaScheduler.shouldUse()) {
             foliaScheduler = new FoliaScheduler(this);
@@ -209,9 +214,10 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         getServer().getPluginManager().registerEvents(this, this);
         registerCommands();
 
-        // Record startup time and launch the raycast monitor.
+        // Record startup time, launch the raycast monitor, and check for updates.
         enabledAt = System.currentTimeMillis();
         startRaycastTask();
+        if (getConfig().getBoolean("settings.update-checker", true)) updateChecker.check();
 
         // Handle already-online players (e.g. after /reload).
         try {
@@ -321,9 +327,9 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         // Raycast settings
         raycastEnabled    = cfg.getBoolean("protection.raycast.enabled", true);
-        raycastZone       = cfg.getDouble("protection.raycast.zone", 8.0);
         raycastMinUpward  = cfg.getDouble("protection.raycast.min-upward-angle", 0.15);
         raycastDebounceMs = cfg.getLong("protection.raycast.deactivation-debounce-ms", 500L);
+        deepDeactivationY = cfg.getDouble("protection.deep-deactivation-y", 20.0);
 
         loadLanguageConfig(cfg.getString("settings.language", "en"));
 
@@ -333,7 +339,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
                 + " surfaceY=" + surfaceY
                 + " voidY=" + voidY
                 + " block=" + replacementBlockType
-                + " raycast=" + raycastEnabled + "(zone=" + raycastZone + ")");
+                + " raycast=" + raycastEnabled + "(deepDeactivationY=" + deepDeactivationY + ")");
     }
 
     private void loadLanguageConfig(String language) {
@@ -490,80 +496,84 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     }
 
     /**
-     * Checks whether a player who is <em>below</em> surfaceY should still have
-     * protection armed, based on either:
+     * Two-layer protection decision for players physically below surfaceY.
+     *
+     * <p><b>Layer 1 – Deep deactivation (hard floor):</b><br>
+     * If the player is below {@code deepDeactivationY}, protection is ALWAYS off.
+     * No raycast, no look-direction check — just off. This fixes the Y=16 void bug
+     * where a player digging straight down through stone would see nothing but void
+     * beneath them because voidY=15 was hidden even when fully surrounded by blocks.
+     *
+     * <p><b>Layer 2 – Raycast zone (deepDeactivationY ≤ feetY &lt; surfaceY):</b><br>
+     * In this band the player <em>might</em> be exploitable by FreeCam (thin ceiling,
+     * cave opening, or camera angled upward). Two sub-checks decide:
      * <ol>
-     *   <li>Their look-vector has a meaningful upward component
-     *       (camera angle could expose underground via FreeCam).</li>
-     *   <li>A vertical ray from their feet to surfaceY hits no solid blocks
-     *       (cave with an opening to the sky – FreeCam can look down into it).</li>
+     *   <li>Look-direction: if the camera points meaningfully upward ({@code dir.y > raycastMinUpward}),
+     *       arm protection so FreeCam can’t angle up to see bases.</li>
+     *   <li>Sky visibility: cast a vertical ray from the eye to surfaceY. If no solid
+     *       block is hit, the cave has an open ceiling — arm protection.</li>
      * </ol>
-     *
-     * Uses feet-Y (player.getLocation().getY()) to stay consistent with
-     * onPlayerMove, avoiding the ~1.6-block eye-vs-feet discrepancy that
-     * previously created a dead zone where neither handler owned the state.
-     *
-     * Deactivation is debounced (500 ms) to prevent rapid state flipping when
-     * the player hovers near the zone boundary.
+     * Both sub-checks must be FALSE to deactivate. Deactivation uses a debounce
+     * ({@code raycastDebounceMs}) to prevent flicker when hovering near the boundary.
      */
     private void checkRaycastActivation(Player player) {
-        // Use feet-Y for consistency with onPlayerMove threshold checks.
         double feetY = player.getLocation().getY();
+        UUID   id    = player.getUniqueId();
 
-        // Already at/above surface – onPlayerMove handles that range.
+        // Already at or above surface — onPlayerMove owns this range.
         if (feetY >= surfaceY) {
-            raycastDeactivationPending.remove(player.getUniqueId());
+            raycastDeactivationPending.remove(id);
             return;
         }
 
-        UUID id = player.getUniqueId();
-
-        // Too far underground – arm deactivation with a short debounce so a
-        // brief dip below the zone boundary doesn't cause a flicker.
-        if (feetY < surfaceY - raycastZone) {
+        // ───────────────────────────────────────────────────────────
+        // LAYER 1: hard floor — below deepDeactivationY, always deactivate.
+        // ───────────────────────────────────────────────────────────
+        if (feetY < deepDeactivationY) {
             if (Boolean.TRUE.equals(playerHiddenState.get(id))) {
-                long now      = System.currentTimeMillis();
-                long pending  = raycastDeactivationPending.getOrDefault(id, 0L);
+                long now     = System.currentTimeMillis();
+                long pending = raycastDeactivationPending.getOrDefault(id, 0L);
                 if (pending == 0L) {
-                    // First time we see this: record the timestamp and wait.
                     raycastDeactivationPending.put(id, now);
-                    return;
+                    return; // start debounce clock
                 }
-                if (now - pending < raycastDebounceMs) return; // still within debounce window
+                if (now - pending < raycastDebounceMs) return; // still waiting
 
-                // Debounce elapsed – actually deactivate.
+                // Debounce elapsed — deactivate.
                 raycastDeactivationPending.remove(id);
                 playerHiddenState.put(id, false);
                 if (entityHider != null) entityHider.updateFor(player);
                 refreshFullView(player);
-                dbg("Raycast deactivated (too deep): " + player.getName()
-                        + " feetY=" + String.format("%.1f", feetY));
+                dbg("Layer1 deactivated (below deepDeactivationY=" + deepDeactivationY + "): "
+                        + player.getName() + " feetY=" + String.format("%.1f", feetY));
             } else {
                 raycastDeactivationPending.remove(id);
             }
             return;
         }
 
-        // Player is inside the raycast zone – cancel any pending deactivation.
-        raycastDeactivationPending.remove(id);
+        // ───────────────────────────────────────────────────────────
+        // LAYER 2: raycast zone — deepDeactivationY ≤ feetY < surfaceY.
+        // Player is close enough to the surface that FreeCam could exploit it.
+        // ───────────────────────────────────────────────────────────
+        raycastDeactivationPending.remove(id); // not pending deactivation anymore
 
         boolean currentHidden = Boolean.TRUE.equals(playerHiddenState.getOrDefault(id, false));
         boolean shouldHide    = false;
 
-        // Condition 1 – look direction has a meaningful upward component.
         Vector dir = player.getEyeLocation().getDirection();
+
+        // Sub-check 1: camera pointing meaningfully upward.
         if (dir.getY() > raycastMinUpward) {
             shouldHide = true;
         }
 
-        // Condition 2 – vertical ray from player's position to surfaceY finds no
-        // solid block (the cave has an opening directly above – FreeCam can
-        // exploit that gap to look down into the base).
+        // Sub-check 2: open vertical path from eye to surface (cave with open ceiling).
         if (!shouldHide) {
             try {
                 Location eye    = player.getEyeLocation();
                 double   distUp = surfaceY - eye.getY();
-                if (distUp > 0.5) { // only cast if there is meaningful distance
+                if (distUp > 0.5) {
                     RayTraceResult rt = player.getWorld().rayTraceBlocks(
                             eye, new Vector(0, 1, 0), distUp,
                             FluidCollisionMode.NEVER, true);
@@ -578,7 +588,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         if (entityHider != null) entityHider.updateFor(player);
         refreshFullView(player);
 
-        dbg("Raycast " + (shouldHide ? "ON" : "OFF") + ": " + player.getName()
+        dbg("Layer2 raycast " + (shouldHide ? "ON" : "OFF") + ": " + player.getName()
                 + " feetY=" + String.format("%.1f", feetY)
                 + " lookY=" + String.format("%.2f", dir.getY()));
     }
@@ -746,7 +756,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         // above surfaceY-raycastZone), defer deactivation to the raycast task.
         // This prevents onPlayerMove from fighting the raycast task and causing
         // rapid state flipping / chunk refresh spam.
-        if (!newHidden && raycastEnabled && to.getY() >= surfaceY - raycastZone) {
+        if (!newHidden && raycastEnabled && to.getY() >= deepDeactivationY) {
             // Still inside the zone where raycast may need protection on.
             // Let checkRaycastActivation decide based on look direction / sky access.
             return;
@@ -1017,7 +1027,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         ChatUtil.send(sender, " &7Block       &8: &f" + replacementBlockType
                 + " &8(id=" + replacementBlockId + ")");
         ChatUtil.send(sender, " &7Raycast     &8: " + (raycastEnabled
-                ? "&aON &8| &7zone &8= &e" + (int)raycastZone
+                ? "&aON &8| &7deepDeactivationY &8= &e" + (int)deepDeactivationY
                 + " &8| &7minUpY &8= &e" + raycastMinUpward
                 + " &8| &7debounce &8= &e" + raycastDebounceMs + "ms"
                 : "&cOFF"));
@@ -1095,7 +1105,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     private void checkConfigVersion() {
         FileConfiguration cfg = getConfig();
         int currentVer = cfg.getInt("config-version", 0);
-        int latestVer  = 2;
+        int latestVer  = 3;
 
         if (currentVer < latestVer) {
             getLogger().info("[FPAntiFreeCam] Updating config.yml to version " + latestVer + "...");

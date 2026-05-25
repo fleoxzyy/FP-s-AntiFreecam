@@ -4,10 +4,13 @@
 #  1.19 · 1.20 · 1.21 · 26.1+
 # ============================================================
 
-config-version: 2
+config-version: 3
 
 # ── General ──────────────────────────────────────────────────
 settings:
+  # Check for updates on startup and notify admins (fpantifreecam.admin permission) on join.
+  update-checker: true
+
   # Language file in plugins/FPAntiFreeCam/lang/<language>.yml
   language: "en"
 
@@ -40,17 +43,22 @@ protection:
   # Smooth transition zone (blocks above void-y where the fade starts).
   transition-zone: 5
 
+  # Absolute Y floor for deep deactivation.
+  # If a player's feet drop BELOW this Y, protection is ALWAYS deactivated —
+  # no raycast, no look-direction check. Fixes the void-underground bug where
+  # digging straight down through stone at surface level would show only void.
+  # Keep this between void-y and surface-y.
+  deep-deactivation-y: 20.0
+
   # Raycast-based activation (look-up-from-cave check).
-  # Prevents FreeCam from being used in caves with sky access.
+  # Active for players between deep-deactivation-y and surface-y.
+  # Prevents FreeCam from exploiting caves with sky access or upward angles.
   raycast:
     enabled: true
-    # Distance below surface-y where raycasting is active.
-    zone: 8.0
-    # Minimum upward angle (0.0 to 1.0) to trigger protection.
+    # Minimum upward angle (0.0–1.0) to trigger protection. ~0.15 ≈ 9° above horizontal.
     min-upward-angle: 0.15
-    # Milliseconds a player must remain outside the raycast zone before
-    # protection is deactivated. Prevents flickering when hovering near
-    # the zone boundary. Lower = snappier transitions; higher = more stable.
+    # Milliseconds below deep-deactivation-y before protection deactivates.
+    # Prevents flicker when hovering near the boundary.
     deactivation-debounce-ms: 500
 
 # ── Replacement block ─────────────────────────────────────────
