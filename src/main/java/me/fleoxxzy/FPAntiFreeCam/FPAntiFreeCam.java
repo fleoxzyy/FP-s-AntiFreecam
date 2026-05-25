@@ -1123,8 +1123,15 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
     private void checkConfigVersion() {
         FileConfiguration cfg = getConfig();
-        int currentVer = cfg.getInt("config-version", 0);
-        int latestVer  = 3;
+        Object rawVer = cfg.get("config-version", 0);
+        double currentVer;
+        if (rawVer instanceof Number n) {
+            currentVer = n.doubleValue();
+        } else {
+            try { currentVer = Double.parseDouble(rawVer.toString()); }
+            catch (Exception e) { currentVer = 0.0; }
+        }
+        double latestVer = 5.0;
 
         if (currentVer < latestVer) {
             getLogger().info("[FPAntiFreeCam] Updating config.yml to version " + latestVer + "...");
