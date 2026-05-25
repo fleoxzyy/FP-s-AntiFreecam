@@ -4,7 +4,8 @@
 #  1.19 · 1.20 · 1.21 · 26.1+
 # ============================================================
 
-config-version: 3
+# PLEASE DO NOT CHANGE!!
+config-version: 3.1
 
 # ── General ──────────────────────────────────────────────────
 settings:
@@ -32,33 +33,30 @@ worlds:
 
 # ── FreeCam protection thresholds ────────────────────────────
 protection:
-  # Y level at-or-above which the hiding effect kicks in.
-  # This is essentially "surface level" (Y ≥ 16 → void below).
-  surface-y: 16.0
+  # Y level at-or-above which the hiding effect is ALWAYS active (Surface).
+  # High values (e.g. 64) hide everything deep while you are on the surface.
+  surface-y: 64.0
 
-  # Every block/entity at-or-below this Y will be hidden from clients
-  # when the protection is active (i.e. player is above surface-y).
+  # Every block/entity at-or-below this Y will be replaced with the void block
+  # (replacement.block-type) when the protection is active.
   void-y: 15
 
-  # Smooth transition zone (blocks above void-y where the fade starts).
-  transition-zone: 5
-
-  # Absolute Y floor for deep deactivation.
-  # If a player's feet drop BELOW this Y, protection is ALWAYS deactivated —
-  # no raycast, no look-direction check. Fixes the void-underground bug where
-  # digging straight down through stone at surface level would show only void.
-  # Keep this between void-y and surface-y.
+  # Absolute Y floor for deep deactivation (Underground).
+  # If a player's feet drop BELOW this Y, protection is ALWAYS deactivated.
+  # This fixes the "void-underground" bug where digging straight down near
+  # the void-y level would show only air beneath you.
+  # Should be set a few blocks above void-y (e.g. 20.0 if void-y is 15).
   deep-deactivation-y: 20.0
 
   # Raycast-based activation (look-up-from-cave check).
-  # Active for players between deep-deactivation-y and surface-y.
-  # Prevents FreeCam from exploiting caves with sky access or upward angles.
+  # Active for players in the transition zone (between deep-deactivation-y and surface-y).
+  # If they look up OR have sky access, protection arms to prevent exploit.
   raycast:
     enabled: true
     # Minimum upward angle (0.0–1.0) to trigger protection. ~0.15 ≈ 9° above horizontal.
     min-upward-angle: 0.15
-    # Milliseconds below deep-deactivation-y before protection deactivates.
-    # Prevents flicker when hovering near the boundary.
+    # Milliseconds of stability required before deactivating/activating via raycast.
+    # Prevents flicker when digging or moving jittery.
     deactivation-debounce-ms: 500
 
 # ── Replacement block ─────────────────────────────────────────

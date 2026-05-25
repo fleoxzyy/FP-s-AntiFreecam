@@ -35,7 +35,6 @@ public final class EntityHider implements Listener {
 
     private boolean enabled  = true;
     private int     voidY    = 15;
-    private int     surfaceY = 16;
 
     public EntityHider(FPAntiFreeCam main) {
         this.plugin = main;
@@ -49,7 +48,6 @@ public final class EntityHider implements Listener {
     public void loadSettings() {
         enabled  = plugin.getConfig().getBoolean("entities.hide-entities", true);
         voidY    = plugin.getConfig().getInt("protection.void-y", 15);
-        surfaceY = (int) plugin.getConfig().getDouble("protection.surface-y", 16.0);
     }
 
     public boolean isEnabled() { return enabled; }
@@ -83,15 +81,6 @@ public final class EntityHider implements Listener {
                 }
             }
         }, 1L);
-    }
-
-    // ── Per-player movement handler ───────────────────────────────────────
-
-    public void onPlayerMove(Player player, Location from, Location to) {
-        if (!enabled) return;
-        boolean wasActive = from.getY() >= surfaceY;
-        boolean isActive  = to.getY()   >= surfaceY;
-        if (wasActive != isActive) updateFor(player);
     }
 
     // ── Cleanup ───────────────────────────────────────────────────────────
