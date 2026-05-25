@@ -51,7 +51,14 @@ public final class ChunkListener implements PacketListener {
         World world = player.getWorld();
         if (world == null || !plugin.isWorldProtected(world.getName())) return;
 
-        if (!plugin.isProtectionActive(player)) return;
+        if (!plugin.isProtectionActive(player)) {
+            // Verify if we are accidentally re-encoding even when protection is inactive.
+            if (event.isReEncodeEnabled()) {
+                plugin.dbg("WARNING: Re-encoding was enabled for " + player.getName() + " despite protection being OFF.");
+                event.markForReEncode(false);
+            }
+            return;
+        }
 
         if (event.getPacketType() == PacketType.Play.Server.CHUNK_DATA) {
             handleChunkData(event, player);
