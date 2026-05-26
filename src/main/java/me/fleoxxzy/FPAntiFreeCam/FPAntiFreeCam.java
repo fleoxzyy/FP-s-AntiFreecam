@@ -99,10 +99,18 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
     private boolean debugMode           = false;
     private int     refreshCooldownMs   = 3_000;
 
-    /** Y level at-or-above which the hiding effect is armed. */
-    private double surfaceY = 16.0;
-    /** Blocks at-or-below this Y are hidden while the effect is active. */
-    private int    voidY    = 15;
+    /**
+     * Y level at-or-above which the hiding effect is armed.
+     * Players at or above this Y will have underground blocks hidden.
+     * Borrowed from TazAntiXray's protection-y-level concept.
+     * Default 31.0 means: player must be above Y=31 for protection to activate.
+     */
+    private double protectionY = 31.0;
+    /**
+     * Blocks at-or-below this Y are hidden while protection is active.
+     * Equivalent to TazAntiXray's hide-below-y.
+     */
+    private int    voidY       = 15;
 
     private Set<String> protectedWorlds = ConcurrentHashMap.newKeySet();
 
@@ -310,8 +318,13 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         debugMode         = cfg.getBoolean("settings.debug-mode", false);
         refreshCooldownMs = cfg.getInt("settings.refresh-cooldown-seconds", 3) * 1_000;
-        surfaceY          = cfg.getDouble("protection.surface-y", 16.0);
-        voidY             = cfg.getInt("protection.void-y", 15);
+        // Support both new key (protection-y) and legacy key (surface-y)
+        if (cfg.contains("protection.protection-y")) {
+            protectionY = cfg.getDouble("protection.protection-y", 31.0);
+        } else {
+            protectionY = cfg.getDouble("protection.surface-y", 31.0);
+        }
+        voidY = cfg.getInt("protection.void-y", 15);
 
         String rawBlock = cfg.getString("replacement.block-type", "air");
         replacementBlockType = rawBlock.startsWith("minecraft:") ? rawBlock : "minecraft:" + rawBlock;
@@ -337,11 +350,26 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         if (entityHider != null) entityHider.loadSettings();
 
+        // Validate: deepDeactivationY must be between voidY and protectionY
+        if (deepDeactivationY >= protectionY) {
+            getLogger().warning("[FPAntiFreeCam] deep-deactivation-y (" + deepDeactivationY
+                    + ") must be LESS than protection-y (" + protectionY
+                    + "). Clamping to " + (protectionY - 5.0));
+            deepDeactivationY = protectionY - 5.0;
+        }
+        if (deepDeactivationY <= voidY) {
+            getLogger().warning("[FPAntiFreeCam] deep-deactivation-y (" + deepDeactivationY
+                    + ") must be GREATER than void-y (" + voidY
+                    + "). Clamping to " + (voidY + 2.0));
+            deepDeactivationY = voidY + 2.0;
+        }
+
         dbg("Config loaded – worlds=" + protectedWorlds
-                + " surfaceY=" + surfaceY
+                + " protectionY=" + protectionY
                 + " voidY=" + voidY
+                + " deepDeactivationY=" + deepDeactivationY
                 + " block=" + replacementBlockType
-                + " raycast=" + raycastEnabled + "(deepDeactivationY=" + deepDeactivationY + ")");
+                + " raycast=" + raycastEnabled);
     }
 
     private void loadLanguageConfig(String language) {
@@ -413,7 +441,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         boolean bypass     = player.hasPermission("fpantifreecam.bypass");
         // Protection is "armed" if above surfaceY. 
         // We will do more granular per-packet checks in ChunkListener.
-        boolean shouldHide = !bypass && player.getLocation().getY() >= surfaceY;
+        boolean shouldHide = !bypass && player.getLocation().getY() >= protectionY;
         playerHiddenState.put(player.getUniqueId(), shouldHide);
         dbg("InitialState " + player.getName() + " hidden=" + shouldHide
                 + " Y=" + String.format("%.1f", player.getLocation().getY()));
@@ -556,12 +584,16 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         boolean targetHidden;
 
         // Determine target state based on altitude.
-        if (feetY < deepDeactivationY) {
-            targetHidden = false;
-        } else if (feetY >= surfaceY) {
-            targetHidden = true;
+        // Zones (low to high):
+        //   feetY <  deepDeactivationY              → Layer 1: always OFF
+        //   deepDeactivationY <= feetY < protectionY → Layer 2: raycast decides
+        //   feetY >= protectionY                     → Layer 3: always ON
+        if (feetY >= protectionY) {
+            targetHidden = true;          // Layer 3: at/above surface, always protect
+        } else if (feetY < deepDeactivationY) {
+            targetHidden = false;         // Layer 1: deep underground, always safe
         } else {
-            targetHidden = calculateRaycast(player);
+            targetHidden = calculateRaycast(player); // Layer 2: raycast zone
         }
 
         if (targetHidden == currentHidden) {
@@ -594,15 +626,30 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
                 + " at Y=" + String.format("%.1f", feetY));
     }
 
+    /**
+     * Returns true if protection should be armed for a player in the raycast zone
+     * (deepDeactivationY ≤ feetY < protectionY).
+     *
+     * Two conditions arm protection:
+     *  1. Look-direction: camera is pointing meaningfully upward — a FreeCam
+     *     user could angle up through the surface from a cave.
+     *  2. Sky-open: a vertical ray from the eye to protectionY hits no solid
+     *     block — the cave has a ceiling gap that FreeCam can exploit.
+     */
     private boolean calculateRaycast(Player player) {
+        // Condition 1: look-direction pointing upward
+        Vector dir = player.getEyeLocation().getDirection();
+        if (dir.getY() > raycastMinUpward) return true;
+
+        // Condition 2: unobstructed vertical path from eye up to protectionY
         try {
             Location eye    = player.getEyeLocation();
-            double   distUp = Math.min(128.0, 320.0 - eye.getY()); // 128 block limit
+            double   distUp = protectionY - eye.getY();
             if (distUp > 0.5) {
                 RayTraceResult rt = player.getWorld().rayTraceBlocks(
                         eye, new Vector(0, 1, 0), distUp,
                         FluidCollisionMode.NEVER, true);
-                if (rt == null) return true; // unobstructed path
+                if (rt == null) return true; // clear path to surface — arm protection
             }
         } catch (Exception ignored) {}
 
@@ -697,8 +744,8 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
         UUID    id        = player.getUniqueId();
         boolean bypass    = player.hasPermission("fpantifreecam.bypass");
-        boolean oldHidden = Boolean.TRUE.equals(playerHiddenState.getOrDefault(id, to.getY() >= surfaceY));
-        boolean newHidden = !bypass && to.getY() >= surfaceY;
+        boolean oldHidden = Boolean.TRUE.equals(playerHiddenState.getOrDefault(id, to.getY() >= protectionY));
+        boolean newHidden = !bypass && to.getY() >= protectionY;
 
         if (oldHidden == newHidden) return;
 
@@ -760,21 +807,24 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
         
         // Logical state: ON if above surfaceY, OFF if below deepDeactivationY.
         // Between them, we defer to the raycast task.
-        boolean newHidden = !bypass && to.getY() >= surfaceY;
+        // Layer 3: above protectionY → ON. Layer 1: below deepDeactivationY → OFF.
+        boolean newHidden = !bypass && to.getY() >= protectionY;
         if (to.getY() < deepDeactivationY) newHidden = false;
 
         // BUG FIX: if no state entry exists (join/world-change race condition),
-        // initialise it rather than hitting the getOrDefault(id, newHidden) trap
-        // which would make oldHidden == newHidden and silently do nothing.
+        // initialise it rather than hitting the getOrDefault trap.
         if (!playerHiddenState.containsKey(id)) {
             handlePlayerInitialState(player, true);
             return;
         }
         boolean oldHidden = Boolean.TRUE.equals(playerHiddenState.get(id));
 
-        // If the player is in the raycast zone, defer deactivation/activation to the raycast task.
-        // This prevents onPlayerMove from fighting the raycast task and causing flickering.
-        if (!bypass && raycastEnabled && to.getY() >= deepDeactivationY && to.getY() < surfaceY) {
+        // Layer 2: raycast zone — defer entirely to the raycast task.
+        // onPlayerMove must NOT touch state here; fighting the raycast task
+        // causes rapid flips and chunk-refresh spam.
+        if (!bypass && raycastEnabled
+                && to.getY() >= deepDeactivationY
+                && to.getY() < protectionY) {
             return;
         }
 
@@ -804,7 +854,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
 
             int radius = Bukkit.getViewDistance();
             if (instantProtection && forceImmediateRefresh
-                    && to.getY() <= surfaceY + preLoadDistance) {
+                    && to.getY() <= protectionY + preLoadDistance) {
                 radius = Math.max(radius, instantRadius);
                 dbg("Instant-protection radius=" + radius + " for " + player.getName());
             }
@@ -1037,12 +1087,13 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
                 + " &7active &8/ &f" + onlineCount + " &7online");
         ChatUtil.send(sender, " &7Worlds      &8: &a" + protectedWorlds.size()
                 + " &8— &7" + protectedWorlds);
-        ChatUtil.send(sender, " &7Surface Y   &8: &e" + surfaceY
-                + "  &7Void Y &8: &e" + voidY);
+        ChatUtil.send(sender, " &7ProtectionY &8: &e" + protectionY
+                + "  &7VoidY &8: &e" + voidY
+                + "  &7DeepDeactY &8: &e" + deepDeactivationY);
         ChatUtil.send(sender, " &7Block       &8: &f" + replacementBlockType
                 + " &8(id=" + replacementBlockId + ")");
         ChatUtil.send(sender, " &7Raycast     &8: " + (raycastEnabled
-                ? "&aON &8| &7deepDeactivationY &8= &e" + (int)deepDeactivationY
+                ? "&aON &8| &7zone &8= &e" + (int)deepDeactivationY + "&8-&e" + (int)protectionY
                 + " &8| &7minUpY &8= &e" + raycastMinUpward
                 + " &8| &7debounce &8= &e" + raycastDebounceMs + "ms"
                 : "&cOFF"));
@@ -1127,7 +1178,7 @@ public final class FPAntiFreeCam extends JavaPlugin implements Listener, Command
             try { currentVer = Double.parseDouble(rawVer.toString()); }
             catch (Exception e) { currentVer = 0.0; }
         }
-        double latestVer = 3.1;
+        double latestVer = 3.2;
 
         if (currentVer < latestVer) {
             getLogger().info("[FPAntiFreeCam] Updating config.yml to version " + latestVer + "...");
